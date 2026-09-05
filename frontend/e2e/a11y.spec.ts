@@ -55,6 +55,42 @@ test("o foco de teclado fica visível nos botões", async ({ page }) => {
   throw new Error("nenhum botão recebeu foco em 12 tabulações — o teste não chegou a verificar nada");
 });
 
+/**
+ * Ordem de foco na Discovery Session (FDD 055; DAP `dap-discovery-session-e-business-case-r2`,
+ * "Notas para quem implementa"): o pacote registrou a ordem de foco como não especificada e
+ * "merece atenção" — é a tela mais usada por teclado do produto, com alguém digitando durante uma
+ * reunião de duas horas. O axe não mede nada disto (é verificação manual, como o teste acima); o
+ * vitest de `DiscoverySessionPage.test.tsx` cobre a mesma lógica em jsdom, e este é o teclado de
+ * verdade, no molde do teste de foco visível: interação real, não `.focus()` isolado nem asserção
+ * de estado sem passar pelo DOM.
+ */
+test("a faixa de blocos da Discovery Session ativa por clique e navega por seta sem perder o foco do chip", async ({ page }) => {
+  await abrir(page, { path: "/projetos/1/sessoes/3", name: "Discovery Session", role: "admin" });
+
+  // Ativação deliberada (clique) desce o foco ao primeiro campo do bloco novo — antes desta
+  // entrega, ficava preso no chip, e tabular a faixa inteira até o campo era o atrito que o DAP
+  // sinalizou.
+  const chipC = page.getByRole("tab", { name: /C · Sistemas e dados/ });
+  await chipC.click();
+  await expect(page.getByLabel(/Quais sistemas participam desse processo/)).toBeFocused();
+
+  // Seta troca de bloco (seleção automática de tablist), mas o foco tem de ficar no chip — descê-
+  // lo ao campo, como na ativação por clique, tornaria a própria navegação por seta impossível de
+  // continuar.
+  await chipC.focus();
+  await page.keyboard.press("ArrowRight");
+  const chipD = page.getByRole("tab", { name: /D · Sponsor e acesso/ });
+  await expect(chipD).toBeFocused();
+  await expect(chipD).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel(/bate o martelo/)).not.toBeFocused();
+
+  // `Home` volta ao primeiro chip da faixa.
+  await page.keyboard.press("Home");
+  const chipA = page.getByRole("tab", { name: /A · Contexto executivo/ });
+  await expect(chipA).toBeFocused();
+  await expect(chipA).toHaveAttribute("aria-selected", "true");
+});
+
 for (const screen of ROUTES) {
   test(`${screen.name} não tem violação de acessibilidade`, async ({ page }) => {
     await abrir(page, screen);

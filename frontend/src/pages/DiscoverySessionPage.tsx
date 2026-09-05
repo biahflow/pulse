@@ -1,4 +1,5 @@
 import { ArrowLeft, Workflow } from "lucide-react";
+import type { KeyboardEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -58,6 +59,9 @@ const VARIANTE_DO_SALVAMENTO = {
   salvando: "state--0", salvo: "state--1", falhou: "state--3",
 } as const;
 
+/** Um só painel existe por vez — o bloco ativo —, e é ele que todo chip da faixa controla. */
+const PAINEL_ID = "discovery-session-bloco-painel";
+
 type EstadoDoSalvamento =
   | { tipo: "parado" }
   | { tipo: "salvando" }
@@ -101,6 +105,13 @@ export function DiscoverySessionPage({ projectId, sessionId }: { projectId: numb
   // A retentativa se agenda por este ref, e não pelo próprio nome: um `useCallback` que se
   // referencia é acesso antes da declaração, e a regra `react-hooks/immutability` reprova.
   const salvarDeNovo = useRef<() => void>(() => {});
+
+  // A faixa de blocos como `tablist`: um ref por chip, para a navegação por seta focar o vizinho
+  // sem esperar o re-render, e o ref do primeiro campo do painel ativo, para onde o foco desce na
+  // ativação deliberada. `moverFocoAoTrocar` é a marca dessa distinção — ver `trocarBloco`.
+  const chipRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const primeiroCampoRef = useRef<HTMLTextAreaElement | null>(null);
+  const moverFocoAoTrocar = useRef(false);
 
   /**
    * Grava o bloco pendente **agora**, e é o único caminho de escrita da tela.
@@ -184,6 +195,16 @@ export function DiscoverySessionPage({ projectId, sessionId }: { projectId: numb
     };
   }, [salvarAgora]);
 
+  // O foco desce ao primeiro campo **depois** de o painel novo renderizar — daí ler a marca aqui,
+  // e não dentro da própria troca. Roda em toda troca de `blocoAtivo`, inclusive a da carga
+  // inicial; a marca começa falsa e só liga na ativação deliberada, então a carga não move foco
+  // nenhum.
+  useEffect(() => {
+    if (!moverFocoAoTrocar.current) return;
+    moverFocoAoTrocar.current = false;
+    primeiroCampoRef.current?.focus();
+  }, [blocoAtivo]);
+
   /** Uma tecla. **Nunca bloqueia o campo** — travar a digitação é pior que o risco do autosave. */
   const anotar = (blocoId: string, perguntaId: string, texto: string) => {
     const doBloco = { ...(respostasRef.current[blocoId] ?? {}), [perguntaId]: texto };
@@ -194,10 +215,40 @@ export function DiscoverySessionPage({ projectId, sessionId }: { projectId: numb
     relogio.current = setTimeout(salvarAgora, INTERVALO_DE_SALVAMENTO);
   };
 
-  /** Trocar de bloco salva o anterior **antes**, sem esperar os 2 s. */
-  const trocarBloco = (blocoId: string) => {
+  /**
+   * Trocar de bloco salva o anterior **antes**, sem esperar os 2 s.
+   *
+   * `moverFoco` só é `true` na ativação deliberada do chip — clique, Enter ou Espaço, que o
+   * próprio `<button>` já traduz em clique nativo. A navegação por seta chama isto com `false`:
+   * ela também troca o bloco (seleção automática, o comportamento certo de um `tablist` — cada
+   * bloco é conteúdo, não um formulário que se perde), mas o foco tem de **ficar no chip**, senão
+   * tabular a faixa vira impossível de continuar navegando por seta.
+   */
+  const trocarBloco = (blocoId: string, moverFoco: boolean) => {
     void salvarAgora();
+    moverFocoAoTrocar.current = moverFoco;
     setBlocoAtivo(blocoId);
+  };
+
+  /**
+   * ← → movem a seleção entre os chips da faixa, com volta nas pontas; `Home`/`End` vão ao
+   * primeiro/último. O foco do teclado **fica no chip que recebe a seta** — nunca desce ao
+   * campo —, porque descê-lo tornaria a própria navegação por seta impossível de continuar.
+   */
+  const navegarNaFaixa = (event: KeyboardEvent<HTMLDivElement>) => {
+    const indiceAtual = blocos.findIndex(item => item.id === blocoAtivo);
+    if (indiceAtual === -1) return;
+
+    let proximo: number;
+    if (event.key === "ArrowRight") proximo = (indiceAtual + 1) % blocos.length;
+    else if (event.key === "ArrowLeft") proximo = (indiceAtual - 1 + blocos.length) % blocos.length;
+    else if (event.key === "Home") proximo = 0;
+    else if (event.key === "End") proximo = blocos.length - 1;
+    else return;
+
+    event.preventDefault();
+    trocarBloco(blocos[proximo].id, false);
+    chipRefs.current[proximo]?.focus();
   };
 
   const estruturar = () => {
@@ -247,17 +298,25 @@ export function DiscoverySessionPage({ projectId, sessionId }: { projectId: numb
 
     {error && <p role="alert" className="alert--error">{error}</p>}
 
-    <div className="filter-bar">
-      {blocos.map(item => <button
+    {/* Semanticamente é um conjunto de abas — cada chip mostra um painel —, daí o padrão
+        WAI-ARIA de tabs: `tablist`/`tab`/`tabpanel`, roving `tabIndex` (só o chip selecionado é
+        tabulável, os demais ficam fora da ordem de Tab) e navegação por seta. */}
+    <div className="filter-bar" role="tablist" aria-label="Blocos de perguntas da sessão" onKeyDown={navegarNaFaixa}>
+      {blocos.map((item, indice) => <button
         key={item.id}
+        ref={elemento => { chipRefs.current[indice] = elemento; }}
+        id={`bloco-tab-${item.id}`}
         type="button"
+        role="tab"
+        aria-selected={item.id === blocoAtivo}
+        aria-controls={PAINEL_ID}
+        tabIndex={item.id === blocoAtivo ? 0 : -1}
         className={`filter-chip ${item.id === blocoAtivo ? "filter-chip--on" : ""}`}
-        aria-pressed={item.id === blocoAtivo}
-        onClick={() => trocarBloco(item.id)}
+        onClick={() => trocarBloco(item.id, true)}
       >{item.id.toUpperCase()} · {item.short_label}</button>)}
     </div>
 
-    {bloco ? <section className="panel">
+    {bloco ? <section className="panel" id={PAINEL_ID} role="tabpanel" aria-labelledby={`bloco-tab-${blocoAtivo}`}>
       <div className="panel-heading">
         <h2>Bloco {bloco.id.toUpperCase()} — {bloco.label}</h2>
         {/* O indicador é **discreto e no cabeçalho**, no lugar onde o carimbo do último
@@ -282,9 +341,10 @@ export function DiscoverySessionPage({ projectId, sessionId }: { projectId: numb
       {bloco.note && <p className="mb-4 text-sm text-muted">{bloco.note}</p>}
 
       <div className="grid gap-4">
-        {bloco.questions.map(pergunta => <label className="form-label" key={pergunta.id}>
+        {bloco.questions.map((pergunta, indice) => <label className="form-label" key={pergunta.id}>
           {pergunta.text}
           <textarea
+            ref={indice === 0 ? primeiroCampoRef : undefined}
             className="field min-h-20"
             value={doBloco[pergunta.id] ?? ""}
             onChange={event => anotar(bloco.id, pergunta.id, event.target.value)}

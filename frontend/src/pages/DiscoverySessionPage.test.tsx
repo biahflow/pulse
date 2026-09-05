@@ -90,8 +90,8 @@ test("as perguntas e os rótulos dos blocos vêm do backend", async () => {
   await abrir();
 
   // A faixa de blocos é a que o servidor mandou, com a forma curta do rótulo.
-  expect(screen.getByRole("button", { name: "A · Contexto executivo" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "B · Follow the work" })).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "A · Contexto executivo" })).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "B · Follow the work" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Bloco A — Contexto executivo" })).toBeInTheDocument();
   expect(screen.getByLabelText(/o que mais te incomoda/)).toBeInTheDocument();
 });
@@ -120,7 +120,7 @@ test("trocar de bloco salva o anterior antes, sem esperar os 2 s", async () => {
   relogioFalso();
 
   anotar(screen.getByLabelText(/o que mais te incomoda/), "Atrasa.");
-  fireEvent.click(screen.getByRole("button", { name: "B · Follow the work" }));
+  fireEvent.click(screen.getByRole("tab", { name: "B · Follow the work" }));
 
   expect(mocks.saveDiscoverySessionBlock).toHaveBeenCalledWith(3, "a", { "o-que-mais-incomoda": "Atrasa." });
   expect(screen.getByRole("heading", { name: "Bloco B — Follow the work (com quem executa)" })).toBeInTheDocument();
@@ -289,4 +289,101 @@ test("sessão de outro projeto não é mostrada sob o rastro deste", async () =>
   render(<DiscoverySessionPage projectId={1} sessionId={3} />);
 
   expect(await screen.findByText("Esta sessão de Discovery não é deste projeto.")).toBeInTheDocument();
+});
+
+/**
+ * Ordem de foco no teclado — o que o DAP `dap-discovery-session-e-business-case-r2` registrou em
+ * "Notas para quem implementa" como não especificado, e que "merece atenção" por esta ser a tela
+ * mais usada por teclado do produto: alguém digita nela durante uma reunião de duas horas. O axe
+ * não mede nada disto — 2.4.7 (foco visível) e a ordem de foco em si são verificação manual —, daí
+ * estes testes de comportamento em vez de mais uma varredura.
+ *
+ * `userEvent`, não `fireEvent`: aqui o que se exercita é a mecânica real de tabulação e seta, ao
+ * contrário dos testes de autosave acima, que usam `fireEvent` de propósito por causa do relógio
+ * falso (`userEvent` agenda os próprios timers entre teclas e trava sob relógio falso). Nenhum
+ * teste abaixo liga `relogioFalso()`.
+ */
+
+test("ativar um bloco por clique põe o foco no primeiro campo do bloco novo", async () => {
+  // Antes desta entrega, o clique trocava o painel e deixava o foco preso no chip: quem conduz a
+  // reunião tinha de tabular por toda a faixa até o primeiro campo — atrito que, ao vivo, custa a
+  // atenção que a tela existe para poupar.
+  const user = userEvent.setup();
+  await abrir();
+
+  await user.click(screen.getByRole("tab", { name: "B · Follow the work" }));
+
+  expect(screen.getByLabelText(/Quantos casos desse tipo passam por aqui num mês/)).toHaveFocus();
+});
+
+test("tabular pela faixa não troca de bloco nem move o foco para o campo", async () => {
+  // Só passar o foco por cima do chip (sem clicar, sem Enter, sem Espaço) não é ativação — o
+  // bloco tem de continuar o mesmo, e o campo não pode receber foco nenhum por causa disso.
+  const user = userEvent.setup();
+  await abrir();
+
+  await user.tab(); // "Voltar para o projeto", único elemento tabulável antes da faixa.
+  await user.tab(); // o único chip tabulável da faixa — o que já está selecionado ("A").
+
+  expect(screen.getByRole("tab", { name: "A · Contexto executivo" })).toHaveFocus();
+  expect(screen.getByRole("heading", { name: "Bloco A — Contexto executivo" })).toBeInTheDocument();
+  expect(screen.getByLabelText(/o que mais te incomoda/)).not.toHaveFocus();
+});
+
+test("só o chip selecionado é tabulável — os outros ficam fora da ordem de Tab", async () => {
+  // Roving tabIndex: é o que faz um único Tab entrar e sair da faixa, em vez de percorrer os seis
+  // chips até chegar ao primeiro campo.
+  await abrir();
+
+  expect(screen.getByRole("tab", { name: "A · Contexto executivo" })).toHaveAttribute("tabindex", "0");
+  expect(screen.getByRole("tab", { name: "B · Follow the work" })).toHaveAttribute("tabindex", "-1");
+});
+
+test("seta para a direita move a seleção para o próximo chip e mantém o foco nele", async () => {
+  // A ativação por seta troca o bloco (seleção automática de tablist), mas o foco tem de ficar no
+  // chip — descê-lo ao campo, como na ativação por clique, tornaria a própria navegação por seta
+  // impossível de continuar.
+  const user = userEvent.setup();
+  await abrir();
+  await user.tab();
+  await user.tab(); // foco no chip "A"
+
+  await user.keyboard("{ArrowRight}");
+
+  const chipB = screen.getByRole("tab", { name: "B · Follow the work" });
+  expect(chipB).toHaveFocus();
+  expect(chipB).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("heading", { name: "Bloco B — Follow the work (com quem executa)" })).toBeInTheDocument();
+  expect(screen.getByLabelText(/Quantos casos desse tipo passam por aqui num mês/)).not.toHaveFocus();
+});
+
+test("seta para a esquerda no primeiro chip volta para o último (volta nas pontas)", async () => {
+  const user = userEvent.setup();
+  await abrir();
+  await user.tab();
+  await user.tab(); // foco no chip "A", o primeiro
+
+  await user.keyboard("{ArrowLeft}");
+
+  const chipB = screen.getByRole("tab", { name: "B · Follow the work" });
+  expect(chipB).toHaveFocus();
+  expect(chipB).toHaveAttribute("aria-selected", "true");
+});
+
+test("Home e End vão ao primeiro e ao último chip da faixa", async () => {
+  const user = userEvent.setup();
+  await abrir();
+  await user.tab();
+  await user.tab(); // foco no chip "A"
+
+  const chipA = screen.getByRole("tab", { name: "A · Contexto executivo" });
+  const chipB = screen.getByRole("tab", { name: "B · Follow the work" });
+
+  await user.keyboard("{End}");
+  expect(chipB).toHaveFocus();
+  expect(chipB).toHaveAttribute("aria-selected", "true");
+
+  await user.keyboard("{Home}");
+  expect(chipA).toHaveFocus();
+  expect(chipA).toHaveAttribute("aria-selected", "true");
 });
