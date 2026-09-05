@@ -671,6 +671,47 @@ def test_download_do_drive_fora_do_ar_vira_502(monkeypatch: pytest.MonkeyPatch) 
     assert resposta.status_code == 502
 
 
+@override_settings(GOOGLE_DRIVE_ENABLED=True, GOOGLE_DRIVE_ROOT_FOLDER_ID="raiz")
+def test_upload_ao_drive_fora_do_ar_vira_502_e_nao_grava_documento(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O **download** tinha teste desde a rodada 3 e o upload, que é o caminho de escrita, não.
+
+    A assimetria é a mesma que a varredura do Google achou entre os dois: o upload foi o primeiro
+    ponto blindado desta FDD, e por ser o primeiro ninguém voltou para cobrar dele a evidência que
+    os vizinhos ganharam depois. A metade que só o caminho de escrita tem é a segunda asserção —
+    **nenhum `Document` gravado**: o serializer sobe ao Drive antes do `save()` justamente para não
+    deixar linha apontando para arquivo que não existe, e essa ordem é a promessa que o comentário
+    dele faz e que nada verificava.
+    """
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from django.urls import reverse
+    from rest_framework.test import APIClient
+
+    from apps.core import drive
+    from apps.core.models import Document, User
+    from apps.core.tests.factories import AccountFactory, UserFactory
+
+    monkeypatch.setattr(drive, "upload_document", _recusa_do_drive)
+    admin = UserFactory(role=User.Role.ADMIN)
+    account = AccountFactory(owner=admin)
+    client = APIClient()
+    client.force_authenticate(admin)
+
+    resposta = client.post(
+        reverse("document-list"),
+        {
+            "account": account.id,
+            "file": SimpleUploadedFile(
+                "contrato.pdf", b"%PDF-1.7 x", content_type="application/pdf"
+            ),
+        },
+    )
+
+    assert resposta.status_code == 502
+    assert Document.objects.count() == 0
+
+
 @override_settings(CALENDAR_ENABLED=True, GOOGLE_CALENDAR_ID="cal")
 def test_evento_de_calendario_recusado_vira_502(monkeypatch: pytest.MonkeyPatch) -> None:
     """`add-to-calendar` chamava `create_event` sem guarda."""

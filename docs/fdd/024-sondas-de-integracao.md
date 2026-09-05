@@ -337,3 +337,48 @@ issues anteriores não tinham como cobrir — nenhuma delas exercitava uma falha
 `DELIVERED` —, não uma classe inteira de defeito deixada passar.
 
 Ver ADR 0062, ADR 0064 e `docs/runbooks/homologacao-de-integracoes.md`, seção 7 (pendente).
+
+## Emenda (05/09/2026) — o outro lado do upload
+
+Uma varredura da superfície de documento saiu atrás de uma dívida que **já estava paga** — o
+`PUT`/`PATCH` de `/documents/{id}/`, fechado quando os verbos saíram do `http_method_names` do
+`DocumentViewSet`, com regressão em `tests/regression/test_documento_e_imutavel.py` — e achou três
+outras no caminho. Duas são a mesma classe que as varreduras acima já acharam duas vezes (a
+auditoria blinda um ponto e deixa o vizinho cru), só que aqui o vizinho é o **outro lado da mesma
+integração**: o upload no Drive foi o primeiro ponto blindado desta FDD, e por ser o primeiro nunca
+recebeu de volta o que os vizinhos ganharam depois.
+
+- **O upload não tinha teste de 502, e o download tinha.** A rodada 3 escreveu
+  `test_download_do_drive_fora_do_ar_vira_502` e não o par de escrita — justamente o caminho em que
+  o arquivo do usuário some. Agora tem
+  (`test_upload_ao_drive_fora_do_ar_vira_502_e_nao_grava_documento`), e com a metade que só o
+  caminho de escrita exige: **nenhum `Document` gravado**. O serializer sobe ao Drive antes do
+  `save()` para não deixar linha apontando para arquivo que não existe, e essa ordem era uma
+  promessa escrita em comentário que nada verificava — repô-la ao contrário reprova a segunda
+  asserção sem mexer na primeira, que continua devolvendo 502.
+- **A captura do `create` era genérica, e a do `download` estreita.** `DocumentSerializer.create`
+  tinha `except Exception` e transformava tudo em 502; a action de download já capturava
+  `drive.DriveProviderError`. Num caminho de escrita, o genérico devolve como "o Drive está fora"
+  também o defeito **nosso** — e essa é exatamente a mentira sobre a origem do problema que os
+  tipos estreitos da varredura do Google existem para evitar. O conserto **não** foi estreitar o
+  `except` e torcer: `drive.upload_document` não embrulhava nada, então estreitar sozinho trocaria
+  um 502 correto por um 500. Foi o adaptador passar a traduzir a conversa com o Google para
+  `DriveProviderError`, como `download_document` já fazia, e só então o chamador estreitou. Ficam
+  **fora** do `try` do adaptador, de propósito, o documento sem conta-dona (defeito daqui — o
+  `Document.clean()` e o `DocumentSerializer.validate` já garantem o vínculo único, e chegar ali
+  com `None` merece 500) e a leitura do arquivo local, que não é conversa com o Google.
+- **O farejamento do `%PDF` morava em três lugares.** O carimbo `Document.content_is_pdf` no
+  upload, o aviso da tela de assinatura (`esign.lacuna_de_posicionamento`) e a leitura das âncoras
+  no envio real (`esign._itens_da_ultima_pagina`) comparavam o mesmo literal por conta própria.
+  Não é falhar-fechado; é *uma regra, uma expressão* (ADR 0010), a mesma razão que fez
+  `apps/core/dinheiro.py` nascer — e com consequência prática, porque os dois primeiros decidem o
+  que a tela promete e o terceiro decide onde a assinatura cai. A decisão virou
+  `apps/core/document.py`, que recebe **bytes** e devolve `bool`: cada chamador continua lendo da
+  fonte que tem (upload em memória, arquivo local, conteúdo baixado), porque centralizar a leitura
+  junto da decisão acoplaria três contextos de I/O num lugar só. Não mora em `esign.py` porque o
+  farejamento é sobre o documento, não sobre a assinatura — e o carimbo existe mesmo numa
+  instalação que nunca ligue o e-sign.
+
+Continua fora: o backfill de `content_is_pdf` para o legado que só existe no Drive (a linha antiga
+fica sem carimbo em vez de ganhar um valor inventado, decisão da issue #120 — `null` é "não
+medido", nunca `False`).
