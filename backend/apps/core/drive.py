@@ -182,31 +182,51 @@ def ensure_project_folder(project: Project) -> str:  # pragma: no cover - I/O
 
 
 def upload_document(document: Document, uploaded_file) -> tuple[str, str]:  # pragma: no cover - I/O
-    """Sobe o arquivo para ``{Conta}/{pasta da finalidade}`` e retorna ``(file_id, link)``."""
+    """Sobe o arquivo para ``{Conta}/{pasta da finalidade}`` e retorna ``(file_id, link)``.
+
+    Traduz a falha do fornecedor para `DriveProviderError`, como `download_document` — e é isso que
+    permite ao chamador estreitar o `except`. Enquanto esta função levantava a família crua do SDK,
+    o `DocumentSerializer.create` só tinha o `except Exception` genérico à disposição, e ele
+    devolvia como "o Drive está fora" também o defeito **nosso**: a mentira sobre a origem do
+    problema que a FDD 024 existe para evitar.
+
+    **O que fica de fora do `try` é deliberado.** Documento sem conta-dona é defeito daqui, não
+    recusa do Google — o `Document.clean()` e o `DocumentSerializer.validate` já garantem o vínculo
+    único, então chegar aqui com `None` significa que alguém contornou os dois, e isso merece 500 e
+    não 502. Ler o arquivo local também não é conversa com o Google, e por isso acontece antes de
+    ela começar. O `account.save()` de `_ensure_account_folder`, ao contrário, fica **dentro**: ele
+    grava o id que o Drive acabou de dar, e sem esse id não existe upload — falhar ali é falhar
+    esta operação.
+    """
     from googleapiclient.http import MediaIoBaseUpload
 
     account = account_of(document)
     if account is None:
         raise ValueError("Documento sem conta-dona para o Drive.")
-    service = _service()
-    account_folder = _ensure_account_folder(service, account)
-    bucket_folder = _ensure_subfolder(service, pasta_do_documento(document), account_folder)
     media = MediaIoBaseUpload(
         io.BytesIO(uploaded_file.read()),
         mimetype=getattr(uploaded_file, "content_type", None) or "application/octet-stream",
         resumable=False,
     )
-    created = (
-        service.files()
-        .create(
-            body={"name": document.original_name, "parents": [bucket_folder]},
-            media_body=media,
-            fields="id, webViewLink",
-            supportsAllDrives=True,
+    try:
+        service = _service()
+        account_folder = _ensure_account_folder(service, account)
+        bucket_folder = _ensure_subfolder(service, pasta_do_documento(document), account_folder)
+        created = (
+            service.files()
+            .create(
+                body={"name": document.original_name, "parents": [bucket_folder]},
+                media_body=media,
+                fields="id, webViewLink",
+                supportsAllDrives=True,
+            )
+            .execute()
         )
-        .execute()
-    )
-    return created["id"], created.get("webViewLink", "")
+        # A leitura da resposta fica dentro: resposta sem `id` é o fornecedor descumprindo o
+        # contrato dele, e um `KeyError` cru ali viraria 500 nosso por um erro que não é nosso.
+        return created["id"], created.get("webViewLink", "")
+    except Exception as exc:  # noqa: BLE001 - a família do SDK vira um tipo só
+        raise DriveProviderError(str(exc) or exc.__class__.__name__) from exc
 
 
 def download_document(document: Document) -> io.BytesIO:  # pragma: no cover - I/O

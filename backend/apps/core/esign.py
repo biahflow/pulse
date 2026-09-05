@@ -44,6 +44,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import drive, flags, notifications
+from .document import conteudo_e_pdf
 from .exceptions import DriveUnavailable
 from .portal import sign
 
@@ -309,7 +310,7 @@ def _itens_da_ultima_pagina(  # pragma: no cover - I/O de PDF, como `_request` �
     (`cm ∘ tm`) — usar só a `tm` devolve a posição relativa dentro do bloco e coloca o documento
     inteiro na mesma altura, que foi o primeiro resultado ao medir os templates reais.
     """
-    if not conteudo.startswith(b"%PDF"):
+    if not conteudo_e_pdf(conteudo):
         return None
     try:
         leitor = pypdf.PdfReader(io.BytesIO(conteudo))
@@ -442,7 +443,7 @@ def lacuna_de_posicionamento(document: Document) -> str | None:
     if carimbo is None and not document.drive_file_id and document.file:
         try:
             with document.file.open("rb") as arquivo:
-                carimbo = arquivo.read(5).startswith(b"%PDF")
+                carimbo = conteudo_e_pdf(arquivo.read(5))
         except Exception as exc:  # noqa: BLE001 - posicionar é auxílio, não a operação
             logger.info("arquivo do documento %s ilegível ao farejar o tipo (%s)", document.pk, exc)
             return None

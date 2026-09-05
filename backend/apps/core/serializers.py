@@ -25,6 +25,7 @@ from . import (
     publication,
 )
 from . import process as process_module
+from .document import conteudo_e_pdf
 from .exceptions import DriveUnavailable
 from .models import (
     ARTIFACT_TRANSITIONS,
@@ -2594,7 +2595,7 @@ class DocumentSerializer(AliasesDaV1Mixin, serializers.ModelSerializer[Document]
         document = Document(
             **validated_data,
             original_name=_safe_original_name(uploaded_file.name),
-            content_is_pdf=prefixo.startswith(b"%PDF"),
+            content_is_pdf=conteudo_e_pdf(prefixo),
             uploaded_by=self.context["request"].user,
         )
         if drive.is_enabled():
@@ -2602,11 +2603,19 @@ class DocumentSerializer(AliasesDaV1Mixin, serializers.ModelSerializer[Document]
                 document.drive_file_id, document.drive_link = drive.upload_document(
                     document, uploaded_file
                 )
-            except Exception as exc:  # noqa: BLE001 - qualquer falha do Drive, não só HTTP
+            except drive.DriveProviderError as exc:
                 # Era o único ponto de integração num caminho de **escrita** sem tratamento:
                 # credencial errada ou pasta inexistente davam 500 mudo e o arquivo do usuário
                 # sumia. 502 diz de quem é o problema (o fornecedor, não o pedido) e deixa claro
                 # que vale repetir — nada é gravado pela metade, porque o `save()` vem depois.
+                #
+                # **Tipo estreito, como no `download` da rodada 3.** Aqui estava o `except
+                # Exception` genérico, e num caminho de escrita ele engolia também o defeito nosso
+                # — o `ValueError` de documento sem conta-dona, um `KeyError` na resposta — e o
+                # devolvia como "o Drive está fora", que é mentira sobre de quem é o problema.
+                # Estreitar só ficou honesto quando `drive.upload_document` passou a embrulhar a
+                # conversa com o Google, como `download_document` já fazia: sem isso, a recusa do
+                # fornecedor subiria como a família crua do SDK e viraria 500.
                 logger.exception("upload ao Drive falhou para %s", document.original_name)
                 raise DriveUnavailable(
                     "O Google Drive não aceitou o arquivo agora. Tente de novo em instantes."
